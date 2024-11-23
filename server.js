@@ -6,6 +6,10 @@ const crypto = require("crypto");
 const app = express();
 const PORT = 3000;
 
+// AES Encryption Settings
+const AES_KEY = crypto.randomBytes(32); // 256-bit AES key (32 bytes)
+const AES_IV = crypto.randomBytes(16);  // 16 bytes IV for AES encryption
+
 // Database setup: Connect to the existing database 'diehlDB.sqlite'
 const db = new sqlite3.Database("diehlDB.sqlite", (err) => {
     if (err) {
@@ -41,11 +45,12 @@ function hashPassword(password) {
     return crypto.createHash("sha256").update(password).digest("hex");
 }
 
+// Register endpoint
 app.post("/register", (req, res) => {
     const { username, password } = req.body;
 
-    // Insecure string concatenation (SQL Injection Vulnerable)
-    db.get("SELECT * FROM users WHERE username = '" + username + "'", (err, row) => {
+    // Check if username already exists
+    db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
         if (err) {
             return res.status(500).json({ message: "Error checking username" });
         }
@@ -53,11 +58,11 @@ app.post("/register", (req, res) => {
             return res.status(400).json({ message: "Username already exists" });
         }
 
-        // Hash the password with SHA-256 (No encryption here, but SQL injection could still happen)
+        // Hash the password with SHA-256
         const hashedPassword = hashPassword(password);
 
-        // Vulnerable insert statement using string concatenation
-        db.run("INSERT INTO users (username, password) VALUES ('" + username + "', '" + hashedPassword + "')", function (err) {
+        // Insert new user into the database
+        db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashedPassword], function (err) {
             if (err) {
                 return res.status(500).json({ message: "Error registering user" });
             }
@@ -66,59 +71,43 @@ app.post("/register", (req, res) => {
     });
 });
 
-// Login endpoint vulnerable to SQL Injection
+// Login endpoint
 app.post("/login", (req, res) => {
     const { username, password } = req.body;
 
-    // Log inputs for debugging
-    console.log("Received Username: ", username);
-    console.log("Received Password: ", password);
-
-    // Hash the password for comparison
-    const hashedPassword = hashPassword(password);
-
-    // Construct the vulnerable query
-    const query = `
-        SELECT * FROM users 
-        WHERE username = '${username}' AND password = '${hashedPassword}'`;
-
-    // Log the SQL query
-    console.log("Executing Query: ", query);
-
-    // Use .all to fetch results for SELECT queries
-    db.all(query, (err, rows) => {
+    // Find the user by username
+    db.get("SELECT password FROM users WHERE username = ?", [username], (err, row) => {
         if (err) {
-            console.error("Database Error: ", err.message);
-            return res.status(500).json({ message: "Database error" });
+            return res.status(500).json({ message: "Error during login" });
+        }
+        if (!row) {
+            return res.status(400).json({ message: "Invalid username or password" });
         }
 
-        // Check if any rows were returned
-        if (rows.length > 0) {
-            // Check if the login was valid (correct username and hashed password)
-            const validUser = rows.find(
-                (row) => row.username === username && row.password === hashedPassword
-            );
-
-            if (validUser) {
-                console.log("Login successful for username:", username);
-                return res.json({ message: "Login successful" });
-            }
-
-            // Otherwise, it's likely an injection-based success
-            db.exec(query);
-            console.log("Login successful via SQL injection, rows returned: ", rows);
-            return res.json({ message: "Login successful via SQL injection", data: rows });
+        // Hash the provided password and compare with stored hash
+        const hashedPassword = hashPassword(password);
+        if (hashedPassword === row.password) {
+            res.json({ message: "Login successful" });
+        } else {
+            res.status(400).json({ message: "Invalid username or password" });
         }
-
-        // If no rows, invalid login
-        console.log("Invalid username or password");
-        return res.status(400).json({ message: "Invalid username or password" });
     });
 });
 
+// AES Encryption (for other sensitive data, if needed)
+function encryptData(data) {
+    const cipher = crypto.createCipheriv("aes-256-cbc", AES_KEY, AES_IV);
+    let encrypted = cipher.update(data, "utf8", "hex");
+    encrypted += cipher.final("hex");
+    return encrypted;
+}
 
-
-
+function decryptData(encryptedData) {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", AES_KEY, AES_IV);
+    let decrypted = decipher.update(encryptedData, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+}
 
 // Start server
 app.listen(PORT, () => {
